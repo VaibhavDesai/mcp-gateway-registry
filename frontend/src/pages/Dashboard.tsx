@@ -50,6 +50,7 @@ interface Server {
   sync_metadata?: SyncMetadata;
   auth_scheme?: string;
   auth_header_name?: string;
+  egress_auth_header?: string;
 }
 
 interface Agent {
@@ -173,6 +174,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
     auth_scheme: 'none',
     auth_credential: '',
     auth_header_name: 'X-API-Key',
+    egress_auth_header: '',
   });
   const [editLoading, setEditLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -762,6 +764,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
         auth_scheme: serverDetails.auth_scheme || 'none',
         auth_credential: '',
         auth_header_name: serverDetails.auth_header_name || 'X-API-Key',
+        egress_auth_header: serverDetails.egress_auth_header || '',
       });
     } catch (error) {
       console.error('Failed to fetch server details:', error);
@@ -780,6 +783,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
         auth_scheme: server.auth_scheme || 'none',
         auth_credential: '',
         auth_header_name: server.auth_header_name || 'X-API-Key',
+        egress_auth_header: server.egress_auth_header || '',
       });
     }
   }, []);
@@ -841,6 +845,9 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
         }
       } else {
         formData.append('auth_scheme', 'none');
+      }
+      if (editForm.egress_auth_header) {
+        formData.append('egress_auth_header', editForm.egress_auth_header);
       }
 
       // Use the correct edit endpoint with the server path
@@ -2574,6 +2581,22 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
                     </div>
                   )}
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
+                  Egress Auth Header (optional)
+                </label>
+                <input
+                  type="text"
+                  value={editForm.egress_auth_header}
+                  onChange={(e) => setEditForm(prev => ({ ...prev, egress_auth_header: e.target.value }))}
+                  className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-purple-500 focus:border-purple-500"
+                  placeholder="x-authorization-myservice"
+                />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Remap this client header to Authorization on the backend
+                </p>
               </div>
 
               <div>

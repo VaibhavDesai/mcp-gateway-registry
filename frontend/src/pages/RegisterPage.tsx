@@ -77,6 +77,7 @@ interface ServerFormData {
   auth_scheme: string;
   auth_credential: string;
   auth_header_name: string;
+  egress_auth_header: string;
 }
 
 
@@ -121,6 +122,7 @@ const initialServerForm: ServerFormData = {
   auth_scheme: 'none',
   auth_credential: '',
   auth_header_name: 'X-API-Key',
+  egress_auth_header: '',
 };
 
 
@@ -340,6 +342,9 @@ const RegisterPage: React.FC = () => {
         }
         if (serverForm.auth_scheme === 'api_key' && serverForm.auth_header_name) {
           formData.append('auth_header_name', serverForm.auth_header_name);
+        }
+        if (serverForm.egress_auth_header) {
+          formData.append('egress_auth_header', serverForm.egress_auth_header);
         }
       }
 
@@ -641,6 +646,25 @@ const RegisterPage: React.FC = () => {
             </p>
           </div>
         )}
+
+        <div>
+          <label className={labelClass}>
+            Egress Auth Header (optional)
+            <span className="ml-1 inline-block" title="Client header to remap to Authorization when proxying to this backend. For example, if clients send credentials via x-authorization-mats, the gateway will forward that value as the Authorization header to the backend server.">
+              <InformationCircleIcon className="h-4 w-4 inline text-gray-400" />
+            </span>
+          </label>
+          <input
+            type="text"
+            className={inputClass}
+            value={serverForm.egress_auth_header}
+            onChange={(e) => setServerForm(prev => ({ ...prev, egress_auth_header: e.target.value }))}
+            placeholder="x-authorization-myservice"
+          />
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Remap this client header to Authorization on the backend (e.g. x-authorization-mats)
+          </p>
+        </div>
 
         {/* Advanced Settings */}
         <div className="md:col-span-2 mt-4">

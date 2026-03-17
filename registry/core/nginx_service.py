@@ -1071,6 +1071,45 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
         proxy_pass {proxy_pass_url};"""
             version_headers = ""
 
+        # Build enabled tools list for tools/list response filtering
+        # Only include tool names where enabled is True (or not set, defaulting to True)
+        enabled_tools_directive = ""
+        if server_info:
+            tool_list = server_info.get("tool_list", [])
+            if tool_list:
+                enabled_names = [
+                    t.get("name") for t in tool_list
+                    if t.get("enabled", True) and t.get("name")
+                ]
+                if enabled_names:
+                    # Escape single quotes in tool names for nginx config safety
+                    safe_names = [n.replace("'", "\\'") for n in enabled_names]
+                    enabled_tools_json = json.dumps(safe_names)
+                    enabled_tools_directive = f"""
+        # Enabled tools for tools/list response filtering
+        set $is_tools_list "";
+        set $enabled_tools '{enabled_tools_json}';
+        body_filter_by_lua_file /etc/nginx/lua/filter_tools.lua;"""
+                    logger.info(
+                        f"Server {path}: tool filtering enabled ({len(enabled_names)}/{len(tool_list)} tools)"
+                    )
+
+        # Determine Authorization header source for this server.
+        # If egress_auth_header is configured, remap the client's custom header
+        # (e.g. x-authorization-mats) to Authorization before proxying to the backend.
+        # This solves the dual-token problem: the gateway JWT authenticates at the
+        # gateway layer, while the backend receives the user's per-service credential.
+        egress_header = server_info.get("egress_auth_header") if server_info else None
+        if egress_header:
+            nginx_var = "$http_" + egress_header.lower().replace("-", "_")
+            auth_proxy_directive = f"proxy_set_header Authorization {nginx_var};"
+            auth_comment = (
+                f"# Egress auth: remap client header '{egress_header}' to Authorization"
+            )
+        else:
+            auth_proxy_directive = "proxy_set_header Authorization $http_authorization;"
+            auth_comment = "# Pass through the original authentication headers"
+
         # Common proxy settings
         common_settings = f"""
         # Use IPv4 resolver (disable IPv6)
@@ -1099,8 +1138,8 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
         # Add original URL for auth server scope validation
         proxy_set_header X-Original-URL $scheme://$host$request_uri;
 
-        # Pass through the original authentication headers
-        proxy_set_header Authorization $http_authorization;
+        {auth_comment}
+        {auth_proxy_directive}
         proxy_set_header X-Authorization $http_x_authorization;
         proxy_set_header X-User-Pool-Id $http_x_user_pool_id;
         proxy_set_header X-Client-Id $http_x_client_id;
@@ -1172,7 +1211,7 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
         logger.info(f"Creating location block for {location_path} with {transport_type} transport")
 
         return f"""
-    location {{{{ROOT_PATH}}}}{location_path} {{{transport_settings}{common_settings}
+    location {{{{ROOT_PATH}}}}{location_path} {{{transport_settings}{enabled_tools_directive}{common_settings}
     }}"""
 
 
