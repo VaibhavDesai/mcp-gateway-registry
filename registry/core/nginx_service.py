@@ -1071,6 +1071,22 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
         proxy_pass {proxy_pass_url};"""
             version_headers = ""
 
+        # Determine Authorization header source for this server.
+        # If egress_auth_header is configured, remap the client's custom header
+        # (e.g. x-authorization-mats) to Authorization before proxying to the backend.
+        # This solves the dual-token problem: the gateway JWT authenticates at the
+        # gateway layer, while the backend receives the user's per-service credential.
+        egress_header = server_info.get("egress_auth_header") if server_info else None
+        if egress_header:
+            nginx_var = "$http_" + egress_header.lower().replace("-", "_")
+            auth_proxy_directive = f"proxy_set_header Authorization {nginx_var};"
+            auth_comment = (
+                f"# Egress auth: remap client header '{egress_header}' to Authorization"
+            )
+        else:
+            auth_proxy_directive = "proxy_set_header Authorization $http_authorization;"
+            auth_comment = "# Pass through the original authentication headers"
+
         # Common proxy settings
         common_settings = f"""
         # Use IPv4 resolver (disable IPv6)
@@ -1099,8 +1115,8 @@ map "$uri:$http_x_mcp_server_version" $versioned_backend {{
         # Add original URL for auth server scope validation
         proxy_set_header X-Original-URL $scheme://$host$request_uri;
 
-        # Pass through the original authentication headers
-        proxy_set_header Authorization $http_authorization;
+        {auth_comment}
+        {auth_proxy_directive}
         proxy_set_header X-Authorization $http_x_authorization;
         proxy_set_header X-User-Pool-Id $http_x_user_pool_id;
         proxy_set_header X-Client-Id $http_x_client_id;

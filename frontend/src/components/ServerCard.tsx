@@ -70,6 +70,7 @@ export interface Server {
   // Backend authentication
   auth_scheme?: string;
   auth_header_name?: string;
+  egress_auth_header?: string;
 }
 
 interface ServerCardProps {

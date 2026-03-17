@@ -128,6 +128,11 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
         }
       }
 
+      // If egress_auth_header is configured, show the per-request credential header
+      if (server.egress_auth_header) {
+        headers[server.egress_auth_header] = 'Bearer [YOUR_SERVICE_TOKEN]';
+      }
+
       return headers;
     };
 
@@ -193,7 +198,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
           },
         };
     }
-  }, [server.name, server.path, server.proxy_pass_url, server.mcp_endpoint, server.auth_scheme, server.auth_header_name, selectedIDE, isRegistryOnly, jwtToken]);
+  }, [server.name, server.path, server.proxy_pass_url, server.mcp_endpoint, server.auth_scheme, server.auth_header_name, server.egress_auth_header, selectedIDE, isRegistryOnly, jwtToken]);
 
   const generateClaudeCodeCommand = useCallback(() => {
     const serverName = server.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
@@ -230,10 +235,15 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
           command += ` \\\n  --header "${headerName}: [YOUR_API_KEY]"`;
         }
       }
+
+      // Add egress auth header if configured
+      if (server.egress_auth_header) {
+        command += ` \\\n  --header "${server.egress_auth_header}: Bearer [YOUR_SERVICE_TOKEN]"`;
+      }
     }
 
     return command;
-  }, [server.name, server.path, server.proxy_pass_url, server.mcp_endpoint, server.auth_scheme, server.auth_header_name, isRegistryOnly, jwtToken]);
+  }, [server.name, server.path, server.proxy_pass_url, server.mcp_endpoint, server.auth_scheme, server.auth_header_name, server.egress_auth_header, isRegistryOnly, jwtToken]);
 
 
   const copyConfigToClipboard = useCallback(async () => {

@@ -712,6 +712,7 @@ async def internal_register_service(
     auth_scheme: Annotated[str, Form()] = "none",
     auth_credential: Annotated[str | None, Form()] = None,
     auth_header_name: Annotated[str | None, Form()] = None,
+    egress_auth_header: Annotated[str | None, Form()] = None,
     supported_transports: Annotated[str | None, Form()] = None,
     headers: Annotated[str | None, Form()] = None,
     tool_list_json: Annotated[str | None, Form()] = None,
@@ -819,6 +820,8 @@ async def internal_register_service(
         server_entry["headers"] = headers_list
     if auth_header_name:
         server_entry["auth_header_name"] = auth_header_name
+    if egress_auth_header:
+        server_entry["egress_auth_header"] = egress_auth_header
 
     # Encrypt credential before storage (if provided)
     if auth_credential and auth_scheme != "none":
@@ -1293,6 +1296,7 @@ async def edit_server_submit(
     auth_scheme: Annotated[str, Form()] = "none",
     auth_credential: Annotated[str | None, Form()] = None,
     auth_header_name: Annotated[str | None, Form()] = None,
+    egress_auth_header: Annotated[str | None, Form()] = None,
     _csrf: Annotated[None, Depends(verify_csrf_token)] = None,
 ):
     """Handle server edit form submission (requires modify_service UI permission)."""
@@ -1393,6 +1397,8 @@ async def edit_server_submit(
         updated_server_entry["auth_scheme"] = auth_scheme
     if auth_header_name:
         updated_server_entry["auth_header_name"] = auth_header_name
+    if egress_auth_header is not None:
+        updated_server_entry["egress_auth_header"] = egress_auth_header if egress_auth_header else None
     if auth_credential and auth_scheme != "none":
         updated_server_entry["auth_credential"] = auth_credential
         try:
@@ -2241,6 +2247,7 @@ async def register_service_api(
     auth_scheme: Annotated[str, Form()] = "none",
     auth_credential: Annotated[str | None, Form()] = None,
     auth_header_name: Annotated[str | None, Form()] = None,
+    egress_auth_header: Annotated[str | None, Form()] = None,
     supported_transports: Annotated[str | None, Form()] = None,
     headers: Annotated[str | None, Form()] = None,
     tool_list_json: Annotated[str | None, Form()] = None,
@@ -2385,6 +2392,8 @@ async def register_service_api(
         server_entry["headers"] = headers_list
     if auth_header_name:
         server_entry["auth_header_name"] = auth_header_name
+    if egress_auth_header:
+        server_entry["egress_auth_header"] = egress_auth_header
     if mcp_endpoint:
         server_entry["mcp_endpoint"] = mcp_endpoint
     if sse_endpoint:
