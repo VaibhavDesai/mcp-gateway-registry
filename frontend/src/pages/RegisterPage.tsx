@@ -10,6 +10,8 @@ import {
   ExclamationCircleIcon,
   XMarkIcon,
   InformationCircleIcon,
+  WrenchScrewdriverIcon,
+  SignalIcon,
 } from '@heroicons/react/24/outline';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
@@ -155,6 +157,11 @@ const RegisterPage: React.FC = () => {
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [fetchedTools, setFetchedTools] = useState<{ name: string; description: string; enabled: boolean }[]>([]);
+  const [testLoading, setTestLoading] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [testToken, setTestToken] = useState('');
+  const [showTestConnection, setShowTestConnection] = useState(false);
 
 
   const generatePath = useCallback((name: string): string => {
@@ -174,6 +181,34 @@ const RegisterPage: React.FC = () => {
       path: prev.path || generatePath(name),
     }));
   }, [generatePath]);
+
+
+  const handleTestConnection = useCallback(async () => {
+    if (!serverForm.proxy_pass_url.trim()) return;
+    setTestLoading(true);
+    setTestResult(null);
+    try {
+      const resp = await axios.post('/api/test-mcp-connection', {
+        proxy_pass_url: serverForm.proxy_pass_url.trim(),
+        token: testToken.trim(),
+      });
+      setTestResult(resp.data);
+      if (resp.data.success && resp.data.tools?.length > 0) {
+        setFetchedTools(resp.data.tools.map((t: any) => ({
+          name: t.name || '',
+          description: t.description || '',
+          enabled: t.enabled !== false,
+        })));
+      }
+    } catch (error: any) {
+      setTestResult({
+        success: false,
+        message: error.response?.data?.detail || 'Test connection failed',
+      });
+    } finally {
+      setTestLoading(false);
+    }
+  }, [serverForm.proxy_pass_url, testToken]);
 
 
   const handleAgentNameChange = useCallback((name: string) => {
@@ -318,41 +353,42 @@ const RegisterPage: React.FC = () => {
     setLoading(true);
 
     try {
-      const formData = new FormData();
-      formData.append('name', serverForm.name);
-      formData.append('description', serverForm.description);
-      formData.append('path', serverForm.path);
-      formData.append('proxy_pass_url', serverForm.proxy_pass_url);
-      formData.append('tags', serverForm.tags);
-      formData.append('num_tools', serverForm.num_tools.toString());
-      formData.append('license', serverForm.license);
+      const params = new URLSearchParams();
+      params.append('name', serverForm.name);
+      params.append('description', serverForm.description);
+      params.append('path', serverForm.path);
+      params.append('proxy_pass_url', serverForm.proxy_pass_url);
+      params.append('tags', serverForm.tags);
+      if (fetchedTools.length > 0) {
+        params.append('tool_list', JSON.stringify(fetchedTools));
+        params.append('num_tools', fetchedTools.length.toString());
+      } else {
+        params.append('num_tools', serverForm.num_tools.toString());
+      }
+      params.append('license', serverForm.license);
       if (serverForm.mcp_endpoint) {
-        formData.append('mcp_endpoint', serverForm.mcp_endpoint);
+        params.append('mcp_endpoint', serverForm.mcp_endpoint);
       }
       if (serverForm.sse_endpoint) {
-        formData.append('sse_endpoint', serverForm.sse_endpoint);
+        params.append('sse_endpoint', serverForm.sse_endpoint);
       }
       if (serverForm.metadata) {
-        formData.append('metadata', serverForm.metadata);
+        params.append('metadata', serverForm.metadata);
       }
       if (serverForm.auth_scheme !== 'none') {
-        formData.append('auth_scheme', serverForm.auth_scheme);
+        params.append('auth_scheme', serverForm.auth_scheme);
         if (serverForm.auth_credential) {
-          formData.append('auth_credential', serverForm.auth_credential);
+          params.append('auth_credential', serverForm.auth_credential);
         }
         if (serverForm.auth_scheme === 'api_key' && serverForm.auth_header_name) {
-          formData.append('auth_header_name', serverForm.auth_header_name);
-        }
-        if (serverForm.egress_auth_header) {
-          formData.append('egress_auth_header', serverForm.egress_auth_header);
+          params.append('auth_header_name', serverForm.auth_header_name);
         }
       }
+      if (serverForm.egress_auth_header) {
+        params.append('egress_auth_header', serverForm.egress_auth_header);
+      }
 
-      await axios.post('/api/register', formData, {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      });
+      await axios.post('/api/register', params);
 
       setToast({ message: 'Server registered successfully!', type: 'success' });
       setTimeout(() => navigate('/'), 1500);
@@ -366,7 +402,7 @@ const RegisterPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [loading, serverForm, validateServerForm, navigate]);
+  }, [loading, serverForm, fetchedTools, validateServerForm, navigate]);
 
 
   const handleAgentSubmit = useCallback(async (e: React.FormEvent) => {
@@ -509,15 +545,42 @@ const RegisterPage: React.FC = () => {
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Comma-separated list</p>
         </div>
 
-        <div>
-          <label className={labelClass}>Number of Tools</label>
-          <input
-            type="number"
-            min="0"
-            className={inputClass}
-            value={serverForm.num_tools}
-            onChange={(e) => setServerForm(prev => ({ ...prev, num_tools: parseInt(e.target.value) || 0 }))}
-          />
+        <div className="md:col-span-2">
+          {fetchedTools.length > 0 ? (
+            <div>
+              <label className={labelClass}>
+                <WrenchScrewdriverIcon className="h-4 w-4 inline mr-1" />
+                Tools ({fetchedTools.filter(t => t.enabled).length}/{fetchedTools.length} enabled)
+              </label>
+              <div className="mt-2 max-h-48 overflow-y-auto border border-gray-200 dark:border-gray-600 rounded-md divide-y divide-gray-100 dark:divide-gray-700">
+                {fetchedTools.map((tool, idx) => (
+                  <label key={idx} className="flex items-center px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tool.enabled}
+                      onChange={() => {
+                        setFetchedTools(prev => prev.map((t, i) => i === idx ? { ...t, enabled: !t.enabled } : t));
+                      }}
+                      className="h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded"
+                    />
+                    <div className="ml-3 min-w-0">
+                      <span className="text-sm font-medium text-gray-900 dark:text-white">{tool.name}</span>
+                      {tool.description && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{tool.description}</p>
+                      )}
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-3">
+              <p className="text-sm text-blue-700 dark:text-blue-300">
+                <InformationCircleIcon className="h-4 w-4 inline mr-1" />
+                Use <strong>Test Connection</strong> below to discover and select tools from your MCP server.
+              </p>
+            </div>
+          )}
         </div>
 
         <div>
@@ -709,6 +772,54 @@ const RegisterPage: React.FC = () => {
           />
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Custom key-value pairs for organization, compliance, or integration purposes</p>
         </div>
+      </div>
+
+      {/* Test Connection Section */}
+      <div className="md:col-span-2 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <button
+          type="button"
+          onClick={() => setShowTestConnection(!showTestConnection)}
+          className="flex items-center text-sm font-medium text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 transition-colors"
+        >
+          <SignalIcon className="h-4 w-4 mr-1.5" />
+          {showTestConnection ? 'Hide Test Connection' : 'Test Connection'}
+          <svg className={`ml-1 h-4 w-4 transition-transform ${showTestConnection ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+        </button>
+
+        {showTestConnection && (
+          <div className="mt-3 p-4 bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700">
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              Enter a bearer token to authenticate with the MCP server and discover its tools.
+            </p>
+            <div className="flex space-x-2">
+              <input
+                type="password"
+                className="flex-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-purple-500 focus:border-purple-500"
+                placeholder="Bearer token (optional)"
+                value={testToken}
+                onChange={(e) => setTestToken(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={testLoading || !serverForm.proxy_pass_url.trim()}
+                className="px-3 py-1.5 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 rounded-md transition-colors whitespace-nowrap"
+              >
+                {testLoading ? 'Testing...' : 'Test'}
+              </button>
+            </div>
+            {testResult && (
+              <div className={`mt-2 p-2 rounded text-xs ${
+                testResult.success
+                  ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+                  : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300'
+              }`}>
+                {testResult.success ? <CheckCircleIcon className="h-3.5 w-3.5 inline mr-1" /> : <ExclamationCircleIcon className="h-3.5 w-3.5 inline mr-1" />}
+                {testResult.message}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex justify-end space-x-3 pt-6 border-t border-gray-200 dark:border-gray-700">

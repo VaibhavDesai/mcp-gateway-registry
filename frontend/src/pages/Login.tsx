@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { initiateWebexLogin } from '../services/webexAuth';
 
 interface OAuthProvider {
   name: string;
@@ -9,10 +10,17 @@ interface OAuthProvider {
   icon?: string;
 }
 
+interface WebexConfig {
+  client_id: string;
+  auth_url: string;
+  scopes: string;
+}
+
 const Login: React.FC = () => {
   const [error, setError] = useState('');
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([]);
   const [authServerUrl, setAuthServerUrl] = useState<string>('');
+  const [webexConfig, setWebexConfig] = useState<WebexConfig | null>(null);
   const [searchParams] = useSearchParams();
 
   useEffect(() => {
@@ -31,6 +39,15 @@ const Login: React.FC = () => {
         try {
             const response = await axios.get('/api/auth/config');
             setAuthServerUrl(response.data.auth_server_url || '');
+
+            // Fetch Webex-specific config if available
+            if (response.data.webex_client_id) {
+              setWebexConfig({
+                client_id: response.data.webex_client_id,
+                auth_url: response.data.webex_auth_url || 'https://integration.webexapis.com/v1/authorize',
+                scopes: response.data.webex_scopes || 'spark:kms spark:places_read spark:organizations_read spark:mcp spark:people_read',
+              });
+            }
         } catch (error) {
             console.error('Failed to fetch auth config:', error);
             // Fallback to localhost for development
@@ -57,14 +74,43 @@ const Login: React.FC = () => {
     }
   };
 
-  const handleOAuthLogin = (provider: string) => {
+  const handleOAuthLogin = async (provider: string) => {
+    // For Webex provider, use client-side PKCE flow
+    if (provider === 'webex') {
+      try {
+        if (webexConfig) {
+          await initiateWebexLogin({
+            clientId: webexConfig.client_id,
+            authUrl: webexConfig.auth_url,
+            scopes: webexConfig.scopes,
+          });
+        } else {
+          // Fallback: try to fetch config inline
+          const configResponse = await axios.get('/api/auth/config');
+          const clientId = configResponse.data.webex_client_id;
+          if (!clientId) {
+            setError('Webex OAuth not configured. Please set WEBEX_CLIENT_ID.');
+            return;
+          }
+          await initiateWebexLogin({
+            clientId,
+            authUrl: configResponse.data.webex_auth_url || 'https://integration.webexapis.com/v1/authorize',
+            scopes: configResponse.data.webex_scopes || 'spark:kms spark:places_read spark:organizations_read spark:mcp spark:people_read',
+          });
+        }
+      } catch (err: any) {
+        console.error('[Login] Failed to initiate Webex login:', err);
+        setError(err.message || 'Failed to initiate Webex login');
+      }
+      return;
+    }
+
+    // For other providers, use server-side OAuth flow (existing behavior)
     const currentOrigin = window.location.origin;
-    // Get the base path from the <base> tag or default to '/'
     const baseElement = document.querySelector('base');
     const basePath = baseElement?.getAttribute('href') || '/';
     const redirectUri = encodeURIComponent(currentOrigin + basePath);
 
-    // Use the auth server URL from config, fallback to localhost if not loaded yet
     const authUrl = authServerUrl || 'http://localhost:8888';
     window.location.href = `${authUrl}/oauth2/login/${provider}?redirect_uri=${redirectUri}`;
   };

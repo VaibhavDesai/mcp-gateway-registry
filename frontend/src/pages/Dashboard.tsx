@@ -51,6 +51,7 @@ interface Server {
   auth_scheme?: string;
   auth_header_name?: string;
   egress_auth_header?: string;
+  tool_list?: { name: string; description: string; enabled: boolean }[];
 }
 
 interface Agent {
@@ -178,6 +179,13 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
   });
   const [editLoading, setEditLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  // Test connection state
+  const [showTestConnection, setShowTestConnection] = useState(false);
+  const [testToken, setTestToken] = useState('');
+  const [testLoading, setTestLoading] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [fetchedTools, setFetchedTools] = useState<{ name: string; description: string; enabled: boolean }[]>([]);
 
   // Agent state management - using agents from useServerStats hook instead of separate fetch
   // Agents loading state is now handled by the useServerStats hook's 'loading' state
@@ -766,6 +774,9 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
         auth_header_name: serverDetails.auth_header_name || 'X-API-Key',
         egress_auth_header: serverDetails.egress_auth_header || '',
       });
+      // Load persisted tool_list so checklist shows immediately
+      const storedTools = serverDetails.tool_list || [];
+      setFetchedTools(storedTools.map((t: any) => ({ name: t.name || '', description: t.description || '', enabled: t.enabled !== false })));
     } catch (error) {
       console.error('Failed to fetch server details:', error);
       // Fallback to basic server data
@@ -785,6 +796,7 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
         auth_header_name: server.auth_header_name || 'X-API-Key',
         egress_auth_header: server.egress_auth_header || '',
       });
+      setFetchedTools((server.tool_list || []).map(t => ({ name: t.name || '', description: t.description || '', enabled: t.enabled !== false })));
     }
   }, []);
 
@@ -806,6 +818,10 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
   const handleCloseEdit = () => {
     setEditingServer(null);
     setEditingAgent(null);
+    setShowTestConnection(false);
+    setTestToken('');
+    setTestResult(null);
+    setFetchedTools([]);
   };
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info') => {
@@ -822,40 +838,38 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
     try {
       setEditLoading(true);
 
-      const formData = new FormData();
-      formData.append('name', editForm.name);
-      formData.append('description', editForm.description);
-      formData.append('proxy_pass_url', editForm.proxyPass);
-      formData.append('tags', editForm.tags.join(','));
-      formData.append('license', editForm.license);
-      formData.append('num_tools', editForm.num_tools.toString());
+      const params = new URLSearchParams();
+      params.append('name', editForm.name);
+      params.append('description', editForm.description);
+      params.append('proxy_pass_url', editForm.proxyPass);
+      params.append('tags', editForm.tags.join(','));
+      params.append('license', editForm.license);
       if (editForm.mcp_endpoint) {
-        formData.append('mcp_endpoint', editForm.mcp_endpoint);
+        params.append('mcp_endpoint', editForm.mcp_endpoint);
       }
       if (editForm.metadata) {
-        formData.append('metadata', editForm.metadata);
+        params.append('metadata', editForm.metadata);
       }
       if (editForm.auth_scheme !== 'none') {
-        formData.append('auth_scheme', editForm.auth_scheme);
+        params.append('auth_scheme', editForm.auth_scheme);
         if (editForm.auth_credential) {
-          formData.append('auth_credential', editForm.auth_credential);
+          params.append('auth_credential', editForm.auth_credential);
         }
         if (editForm.auth_scheme === 'api_key' && editForm.auth_header_name) {
-          formData.append('auth_header_name', editForm.auth_header_name);
+          params.append('auth_header_name', editForm.auth_header_name);
         }
       } else {
-        formData.append('auth_scheme', 'none');
+        params.append('auth_scheme', 'none');
       }
       if (editForm.egress_auth_header) {
-        formData.append('egress_auth_header', editForm.egress_auth_header);
+        params.append('egress_auth_header', editForm.egress_auth_header);
+      }
+      if (fetchedTools.length > 0) {
+        params.append('tool_list', JSON.stringify(fetchedTools));
       }
 
       // Use the correct edit endpoint with the server path
-      await axios.post(`/api/edit${editingServer.path}`, formData, {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      });
+      await axios.post(`/api/edit${editingServer.path}`, params);
 
       // Refresh server list
       await refreshData();
@@ -867,6 +881,33 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
       showToast(error.response?.data?.detail || 'Failed to update server', 'error');
     } finally {
       setEditLoading(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!editingServer || !testToken.trim()) return;
+    setTestLoading(true);
+    setTestResult(null);
+    setFetchedTools([]);
+    try {
+      const resp = await axios.post(`/api/test-mcp-server${editingServer.path}`, {
+        token: testToken.trim(),
+      });
+      setTestResult(resp.data);
+      if (resp.data.success && resp.data.tools?.length > 0) {
+        setFetchedTools(resp.data.tools.map((t: any) => ({
+          name: t.name || '',
+          description: t.description || '',
+          enabled: t.enabled !== false,
+        })));
+      }
+    } catch (error: any) {
+      setTestResult({
+        success: false,
+        message: error.response?.data?.detail || 'Test connection failed',
+      });
+    } finally {
+      setTestLoading(false);
     }
   };
 
@@ -2464,19 +2505,71 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-200 mb-1">
-                    Number of Tools
-                  </label>
-                  <input
-                    type="number"
-                    value={editForm.num_tools}
-                    onChange={(e) => setEditForm(prev => ({ ...prev, num_tools: parseInt(e.target.value) || 0 }))}
-                    className="block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-purple-500 focus:border-purple-500"
-                    min="0"
-                  />
-                </div>
+              {/* Tools Section */}
+              <div>
+                {fetchedTools.length > 0 ? (
+                  <>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-200">
+                        Tools ({fetchedTools.filter(t => t.enabled).length}/{fetchedTools.length} enabled)
+                      </label>
+                      <div className="flex space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => setFetchedTools(prev => prev.map(t => ({ ...t, enabled: true })))}
+                          className="text-xs text-purple-600 dark:text-purple-400 hover:underline"
+                        >
+                          Enable All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFetchedTools(prev => prev.map(t => ({ ...t, enabled: false })))}
+                          className="text-xs text-gray-500 dark:text-gray-400 hover:underline"
+                        >
+                          Disable All
+                        </button>
+                      </div>
+                    </div>
+                    <div className="max-h-60 overflow-y-auto border border-gray-200 dark:border-gray-600 rounded-md divide-y divide-gray-100 dark:divide-gray-700">
+                      {fetchedTools.map((tool) => (
+                        <label
+                          key={tool.name}
+                          className={`flex items-start gap-3 px-3 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-750 transition-colors ${!tool.enabled ? 'opacity-50' : ''}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={tool.enabled}
+                            onChange={() => {
+                              setFetchedTools(prev => prev.map(t =>
+                                t.name === tool.name ? { ...t, enabled: !t.enabled } : t
+                              ));
+                            }}
+                            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <span className="block text-sm font-medium text-gray-900 dark:text-white truncate">
+                              {tool.name}
+                            </span>
+                            {tool.description && (
+                              <span className="block text-xs text-gray-500 dark:text-gray-400 truncate">
+                                {tool.description}
+                              </span>
+                            )}
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Use Test Connection below to refresh the tool list from the server.
+                    </p>
+                  </>
+                ) : (
+                  <div className="p-3 border border-dashed border-gray-300 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-750">
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      <span className="font-medium">Tools:</span> Use Test Connection below to discover and manage tools for this server.
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -2611,7 +2704,52 @@ const Dashboard: React.FC<DashboardProps> = ({ activeFilter = 'all' }) => {
                 />
               </div>
 
+              {/* Test Connection Panel */}
+              {showTestConnection && (
+                <div className="p-3 border border-gray-200 dark:border-gray-600 rounded-md bg-gray-50 dark:bg-gray-750 space-y-2">
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-300">
+                    Bearer token for {editForm.egress_auth_header ? <code className="text-purple-600 dark:text-purple-400">{editForm.egress_auth_header}</code> : 'MCP server'}
+                  </label>
+                  <input
+                    type="password"
+                    value={testToken}
+                    onChange={(e) => setTestToken(e.target.value)}
+                    className="block w-full px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-purple-500 focus:border-purple-500"
+                    placeholder="Paste your backend auth token"
+                  />
+                  <div className="flex space-x-2">
+                    <button
+                      type="button"
+                      onClick={handleTestConnection}
+                      disabled={testLoading || !testToken.trim()}
+                      className="px-3 py-1.5 text-xs font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 rounded-md transition-colors"
+                    >
+                      {testLoading ? 'Testing...' : 'Test'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowTestConnection(false); setTestResult(null); }}
+                      className="px-3 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-white transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {testResult && (
+                    <div className={`mt-2 p-2 rounded text-xs ${testResult.success ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800'}`}>
+                      {testResult.success ? '\u2705' : '\u274C'} {testResult.message}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex space-x-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => { setShowTestConnection(true); setTestResult(null); setTestToken(''); }}
+                  className="px-4 py-2 text-sm font-medium text-purple-600 dark:text-purple-400 border border-purple-300 dark:border-purple-600 rounded-md hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors"
+                >
+                  Test Connection
+                </button>
                 <button
                   type="submit"
                   disabled={editLoading}

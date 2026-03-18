@@ -302,6 +302,44 @@ async def logout_post(
     return await logout_handler(request, session)
 
 
+@router.post("/token-exchange/{provider}")
+async def token_exchange_proxy(provider: str, request: Request):
+    """Proxy token exchange to auth server (PKCE flow — frontend sends code, backend adds client_secret)."""
+    try:
+        body = await request.json()
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{settings.auth_server_url}/oauth2/token-exchange/{provider}",
+                json=body,
+                timeout=15.0,
+            )
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+    except Exception as e:
+        logger.error(f"Token exchange proxy error: {e}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"detail": str(e)}, status_code=500)
+
+
+@router.post("/refresh/{provider}")
+async def token_refresh_proxy(provider: str, request: Request):
+    """Proxy token refresh to auth server."""
+    try:
+        body = await request.json()
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{settings.auth_server_url}/oauth2/refresh/{provider}",
+                json=body,
+                timeout=15.0,
+            )
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+    except Exception as e:
+        logger.error(f"Token refresh proxy error: {e}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"detail": str(e)}, status_code=500)
+
+
 @router.get("/providers")
 async def get_providers_api():
     """API endpoint to get available OAuth2 providers for React frontend"""
@@ -311,8 +349,31 @@ async def get_providers_api():
 
 @router.get("/config")
 async def get_auth_config():
-    """API endpoint to get auth configuration for React frontend"""
-    return {"auth_server_url": settings.auth_server_external_url}
+    """API endpoint to get auth configuration for React frontend.
+
+    Returns auth server URL and, for Webex provider, the client-side config
+    needed for PKCE flow (client_id, auth_url, scopes — no secrets).
+    """
+    config = {"auth_server_url": settings.auth_server_external_url}
+
+    # Fetch Webex client config from auth server if Webex is the active provider
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.auth_server_url}/config", timeout=5.0
+            )
+            if response.status_code == 200:
+                data = response.json()
+                provider_info = data.get("provider_info", {})
+                if provider_info.get("provider_type") == "webex":
+                    endpoints = provider_info.get("endpoints", {})
+                    config["webex_client_id"] = provider_info.get("client_id", "")
+                    config["webex_auth_url"] = endpoints.get("auth", "https://integration.webexapis.com/v1/authorize")
+                    config["webex_scopes"] = provider_info.get("scopes", "spark:people_read")
+    except Exception as e:
+        logger.warning(f"Failed to fetch auth server config for Webex: {e}")
+
+    return config
 
 
 @router.get("/csrf-token")

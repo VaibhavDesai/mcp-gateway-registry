@@ -55,6 +55,7 @@ export interface Server {
   rating_details?: Array<{ user: string; rating: number }>;
   status?: 'healthy' | 'healthy-auth-expired' | 'unhealthy' | 'unknown';
   num_tools?: number;
+  enabled_tools_count?: number;
   proxy_pass_url?: string;
   mcp_endpoint?: string;
   // Version routing fields
@@ -71,6 +72,7 @@ export interface Server {
   auth_scheme?: string;
   auth_header_name?: string;
   egress_auth_header?: string;
+  tool_list?: { name: string; description: string; enabled: boolean }[];
 }
 
 interface ServerCardProps {
@@ -521,32 +523,37 @@ const ServerCard: React.FC<ServerCardProps> = React.memo(({ server, onToggle, on
               onShowToast={onShowToast}
             />
             <div className="flex items-center gap-2">
-              {(server.num_tools || 0) > 0 ? (
-                <button
-                  onClick={handleViewTools}
-                  disabled={loadingTools}
-                  className="flex items-center gap-2 text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 disabled:opacity-50 hover:bg-blue-50 dark:hover:bg-blue-900/20 px-2 py-1 -mx-2 -my-1 rounded transition-all"
-                  title="View tools"
-                >
-                  <div className="p-1.5 bg-blue-50 dark:bg-blue-900/30 rounded">
-                    <WrenchScrewdriverIcon className="h-4 w-4" />
+              {(() => {
+                const totalTools = server.tool_list?.length || server.num_tools || 0;
+                const enabledCount = server.enabled_tools_count ?? server.tool_list?.filter(t => t.enabled !== false).length ?? 0;
+                const toolsLabel = totalTools > 0 ? `${enabledCount}/${totalTools}` : '0';
+                return totalTools > 0 ? (
+                  <button
+                    onClick={handleViewTools}
+                    disabled={loadingTools}
+                    className="flex items-center gap-2 text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 disabled:opacity-50 hover:bg-blue-50 dark:hover:bg-blue-900/20 px-2 py-1 -mx-2 -my-1 rounded transition-all"
+                    title="View tools"
+                  >
+                    <div className="p-1.5 bg-blue-50 dark:bg-blue-900/30 rounded">
+                      <WrenchScrewdriverIcon className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-semibold">{toolsLabel}</div>
+                      <div className="text-xs">Tools</div>
+                    </div>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2 text-gray-400 dark:text-gray-500">
+                    <div className="p-1.5 bg-gray-50 dark:bg-gray-800 rounded">
+                      <WrenchScrewdriverIcon className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-semibold">0</div>
+                      <div className="text-xs">Tools</div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-sm font-semibold">{server.num_tools}</div>
-                    <div className="text-xs">Tools</div>
-                  </div>
-                </button>
-              ) : (
-                <div className="flex items-center gap-2 text-gray-400 dark:text-gray-500">
-                  <div className="p-1.5 bg-gray-50 dark:bg-gray-800 rounded">
-                    <WrenchScrewdriverIcon className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <div className="text-sm font-semibold">{server.num_tools || 0}</div>
-                    <div className="text-xs">Tools</div>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
             {/* Version display - user routing version and/or MCP server version */}
             <div className="flex flex-col items-end gap-1">

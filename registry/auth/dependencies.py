@@ -1,6 +1,7 @@
 import logging
 from typing import Annotated, Any
 
+import httpx
 from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
@@ -544,6 +545,7 @@ async def nginx_proxied_auth(
             "keycloak",
             "entra",
             "cognito",
+            "webex",
             "network-trusted",
             "federation-static",
         ]:
@@ -631,6 +633,70 @@ async def nginx_proxied_auth(
             f"nginx-proxied auth context for {username} (is_admin={is_admin}): {user_context}"
         )
         return user_context
+
+    # Try Bearer token validation directly via auth server (for non-nginx setups)
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        logger.info(
+            "[NGINX_AUTH_FALLBACK] No nginx headers but Bearer token found, validating via auth server"
+        )
+        try:
+            async with httpx.AsyncClient() as client:
+                validate_response = await client.get(
+                    f"{settings.auth_server_url}/validate",
+                    headers={"Authorization": auth_header},
+                    timeout=10.0,
+                )
+            if validate_response.status_code == 200:
+                # Extract user info from auth server response headers
+                val_username = validate_response.headers.get("x-user", "")
+                val_scopes_str = validate_response.headers.get("x-scopes", "")
+                val_auth_method = validate_response.headers.get("x-auth-method", "")
+                val_scopes = val_scopes_str.split() if val_scopes_str else []
+
+                # Map scopes to groups
+                val_groups = []
+                if val_auth_method in ["keycloak", "entra", "cognito", "webex", "network-trusted"]:
+                    if (
+                        "mcp-servers-unrestricted/read" in val_scopes
+                        and "mcp-servers-unrestricted/execute" in val_scopes
+                    ):
+                        val_groups = ["mcp-registry-admin"]
+                    else:
+                        val_groups = ["mcp-registry-user"]
+
+                # Get accessible servers and permissions
+                accessible_servers = await get_user_accessible_servers(val_scopes)
+                ui_permissions = await get_ui_permissions_for_user(val_scopes)
+                accessible_services = get_accessible_services_for_user(ui_permissions)
+                accessible_agents = get_accessible_agents_for_user(ui_permissions)
+                can_modify = user_can_modify_servers(val_groups, val_scopes)
+
+                user_context = {
+                    "username": val_username,
+                    "client_id": "",
+                    "groups": val_groups,
+                    "scopes": val_scopes,
+                    "auth_method": val_auth_method,
+                    "provider": val_auth_method,
+                    "accessible_servers": accessible_servers,
+                    "accessible_services": accessible_services,
+                    "accessible_agents": accessible_agents,
+                    "ui_permissions": ui_permissions,
+                    "can_modify_servers": can_modify,
+                    "is_admin": await user_has_wildcard_access(val_scopes),
+                }
+                request.state.user_context = user_context
+                logger.info(
+                    f"Bearer token validated via auth server for user: {val_username}, method: {val_auth_method}"
+                )
+                return user_context
+            else:
+                logger.warning(
+                    f"[NGINX_AUTH_FALLBACK] Auth server rejected Bearer token: {validate_response.status_code}"
+                )
+        except Exception as e:
+            logger.warning(f"[NGINX_AUTH_FALLBACK] Bearer token validation via auth server failed: {e}")
 
     # Fallback to session cookie authentication
     logger.info(

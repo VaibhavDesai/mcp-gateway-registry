@@ -3,6 +3,8 @@ import { ClipboardDocumentIcon, KeyIcon } from '@heroicons/react/24/outline';
 import axios from 'axios';
 import type { Server } from './ServerCard';
 import { useRegistryConfig } from '../hooks/useRegistryConfig';
+import { useAuth } from '../contexts/AuthContext';
+import { getAccessToken } from '../services/webexAuth';
 import useEscapeKey from '../hooks/useEscapeKey';
 
 type IDE = 'cursor' | 'roo-code' | 'claude-code' | 'kiro';
@@ -26,6 +28,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const { config: registryConfig, loading: configLoading } = useRegistryConfig();
+  const { user } = useAuth();
 
   useEscapeKey(onClose, isOpen);
 
@@ -49,6 +52,17 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
     setTokenLoading(true);
     setTokenError(null);
     try {
+      // For Webex auth, use the Webex access token directly as the gateway token
+      if (user?.provider === 'webex') {
+        const webexToken = getAccessToken();
+        if (webexToken) {
+          setJwtToken(webexToken);
+        } else {
+          setTokenError('No Webex token found. Please log in again.');
+        }
+        return;
+      }
+
       const response = await axios.post('/api/tokens/generate', {
         description: 'Generated for MCP configuration',
         expires_in_hours: 8,
@@ -116,7 +130,7 @@ const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
       const headers: Record<string, string> = {};
 
       // Add gateway authentication header
-      headers['X-Authorization'] = `Bearer ${authToken}`;
+      headers['Authorization'] = `Bearer ${authToken}`;
 
       // Add server authentication headers if server requires auth
       if (server.auth_scheme && server.auth_scheme !== 'none') {

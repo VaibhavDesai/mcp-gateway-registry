@@ -91,6 +91,24 @@ providers:
     name_claim: "name"
     enabled: "${GOOGLE_ENABLED}"
 
+  webex:
+    display_name: "Webex (Cisco)"
+    client_id: "${WEBEX_CLIENT_ID}"
+    client_secret: "${WEBEX_CLIENT_SECRET}"
+    auth_url: "${WEBEX_AUTH_BASE_URL}/v1/authorize"
+    token_url: "${WEBEX_TOKEN_URL}"
+    user_info_url: "${WEBEX_API_BASE_URL}/v1/people/me"
+    logout_url: "${WEBEX_LOGOUT_URL}"
+    scopes: ["spark:organizations_read", "spark:mcp", "identity:people_read"]
+    response_type: "code"
+    grant_type: "authorization_code"
+    # Webex claim mapping (from /v1/people/me response)
+    username_claim: "emails"  # First email in the emails array
+    groups_claim: null  # Webex has no groups — derived from orgId
+    email_claim: "emails"
+    name_claim: "displayName"
+    enabled: "${WEBEX_ENABLED}"
+
 # Default session settings
 session:
   max_age_seconds: 28800  # 8 hours

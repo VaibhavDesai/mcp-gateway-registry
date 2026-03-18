@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import axios from 'axios';
+import { getAccessToken, getValidAccessToken, getUserProfile, signOut as webexSignOut } from '../services/webexAuth';
 
 // Get base URL from <base> tag for path-based routing (e.g., /registry)
 const getBaseURL = () => {
@@ -71,8 +72,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     // Set axios baseURL from <base> tag when component mounts
     axios.defaults.baseURL = getBaseURL();
 
-    // Setup axios interceptor to include CSRF token in requests
-    const interceptor = axios.interceptors.request.use((config) => {
+    // Setup axios interceptor to:
+    // 1. Inject Webex Bearer token if available (takes precedence over cookies)
+    // 2. Include CSRF token in mutating requests
+    const interceptor = axios.interceptors.request.use(async (config) => {
+      // Inject Webex Bearer token if present in localStorage
+      const webexToken = getAccessToken();
+      if (webexToken) {
+        config.headers['Authorization'] = `Bearer ${webexToken}`;
+      }
+
       if (csrfToken && config.method && ['post', 'put', 'delete', 'patch'].includes(config.method.toLowerCase())) {
         config.headers['X-CSRF-Token'] = csrfToken;
       }
@@ -87,7 +96,26 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
   }, [csrfToken]);
 
-  const checkAuth = async () => {
+  const checkAuth = useCallback(async () => {
+    // Skip auth check on OAuth callback page — the callback component handles its own auth
+    if (window.location.pathname === '/auth/callback') {
+      setLoading(false);
+      return;
+    }
+
+    // If we have a Webex token, try to get a valid one (refresh if needed)
+    const webexToken = getAccessToken();
+    if (webexToken) {
+      const validToken = await getValidAccessToken();
+      if (!validToken) {
+        // Token expired and refresh failed — clear and show login
+        webexSignOut();
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+    }
+
     try {
       const response = await axios.get('/api/auth/me');
       const userData = response.data;
@@ -119,15 +147,22 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   const logout = async () => {
     // Clear user state and CSRF token immediately for responsive UI
     setUser(null);
     setCsrfToken(null);
-    // Perform full-page redirect to logout endpoint
-    // This allows the browser to follow the redirect chain: Registry → Auth-server → IdP → Registry
-    // Using window.location.href avoids CORS issues with cross-origin redirects
+
+    // If authenticated via Webex Bearer token, clear localStorage and redirect to login
+    if (getAccessToken()) {
+      webexSignOut();
+      window.location.href = `${getBaseURL()}/login`;
+      return;
+    }
+
+    // Fallback: cookie-based logout via redirect chain
+    // Registry → Auth-server → IdP → Registry
     window.location.href = `${getBaseURL()}/api/auth/logout`;
   };
 

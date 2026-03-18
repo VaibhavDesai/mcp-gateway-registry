@@ -29,8 +29,11 @@ interface Server {
   rating?: number;
   status?: 'healthy' | 'healthy-auth-expired' | 'unhealthy' | 'unknown';
   num_tools?: number;
+  enabled_tools_count?: number;
+  tool_list?: { name: string; description: string; enabled: boolean }[];
   type: 'server' | 'agent';
   proxy_pass_url?: string;
+  egress_auth_header?: string;
   version?: string;
   versions?: ServerVersion[];
   default_version?: string;
@@ -150,9 +153,6 @@ export const useServerStats = (): UseServerStatsReturn => {
       
       // Transform server data from backend format to frontend format
       const transformedServers: Server[] = serversList.map((serverInfo: any) => {
-        // Debug log to see what last_checked_iso data we're getting
-        console.log(`🕐 Server ${serverInfo.display_name}: last_checked_iso =`, serverInfo.last_checked_iso);
-        
         const transformed = {
           name: serverInfo.display_name || 'Unknown Server',
           path: serverInfo.path,
@@ -176,14 +176,10 @@ export const useServerStats = (): UseServerStatsReturn => {
           sync_metadata: serverInfo.sync_metadata,
           auth_scheme: serverInfo.auth_scheme,
           auth_header_name: serverInfo.auth_header_name,
+          egress_auth_header: serverInfo.egress_auth_header,
+          tool_list: serverInfo.tool_list,
+          enabled_tools_count: serverInfo.enabled_tools_count,
         };
-        
-        // Debug log the transformed server
-        console.log(`🔄 Transformed server ${transformed.name}:`, {
-          last_checked_time: transformed.last_checked_time,
-          status: transformed.status,
-          enabled: transformed.enabled
-        });
         
         return transformed;
       });

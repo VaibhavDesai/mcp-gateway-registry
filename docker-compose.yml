@@ -237,6 +237,7 @@ services:
     environment:
       - REGISTRY_URL=${REGISTRY_URL}
       - SECRET_KEY=${SECRET_KEY}
+      - AUTH_SERVER_EXTERNAL_URL=${AUTH_SERVER_EXTERNAL_URL:-http://localhost}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
       - GITHUB_ENABLED=${GITHUB_ENABLED:-false}
@@ -253,7 +254,7 @@ services:
       - METRICS_SERVICE_URL=http://metrics-service:8890
       - METRICS_API_KEY=${METRICS_API_KEY_AUTH_SERVER}
       # Keycloak configuration
-      - AUTH_PROVIDER=${AUTH_PROVIDER:-cognito}  # 'cognito' or 'keycloak'
+      - AUTH_PROVIDER=${AUTH_PROVIDER:-cognito}  # 'cognito', 'keycloak', 'entra', or 'webex'
       - KEYCLOAK_ENABLED=${KEYCLOAK_ENABLED:-true}  # Enable Keycloak by default
       - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
       - KEYCLOAK_EXTERNAL_URL=${KEYCLOAK_EXTERNAL_URL:-http://localhost:8080}
@@ -267,6 +268,17 @@ services:
       - ENTRA_CLIENT_ID=${ENTRA_CLIENT_ID}
       - ENTRA_CLIENT_SECRET=${ENTRA_CLIENT_SECRET}
       - ENTRA_ENABLED=${ENTRA_ENABLED:-false}
+      # Webex (Cisco) OAuth configuration
+      - WEBEX_CLIENT_ID=${WEBEX_CLIENT_ID}
+      - WEBEX_CLIENT_SECRET=${WEBEX_CLIENT_SECRET}
+      - WEBEX_API_BASE_URL=${WEBEX_API_BASE_URL:-https://webexapis.com}
+      - WEBEX_AUTH_BASE_URL=${WEBEX_AUTH_BASE_URL:-https://integration.webexapis.com}
+      - WEBEX_LOGOUT_URL=${WEBEX_LOGOUT_URL:-https://idbroker.webex.com/idb/oauth2/v1/logout}
+      - WEBEX_ENABLED=${WEBEX_ENABLED:-false}
+      - WEBEX_SCOPES=${WEBEX_SCOPES:-spark:people_read}
+      - WEBEX_TOKEN_URL=${WEBEX_TOKEN_URL:-https://webexapis.com/v1/access_token}
+      - WEBEX_ORG_GROUP_MAPPINGS=${WEBEX_ORG_GROUP_MAPPINGS:-}
+      - WEBEX_DEFAULT_GROUPS=${WEBEX_DEFAULT_GROUPS:-}
       # Storage Backend Configuration
       - STORAGE_BACKEND=${STORAGE_BACKEND:-file}
       # DocumentDB/MongoDB Configuration (when STORAGE_BACKEND=documentdb or mongodb-ce)

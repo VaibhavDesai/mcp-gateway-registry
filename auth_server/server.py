@@ -1142,7 +1142,7 @@ async def health_check():
     return {"status": "healthy", "service": "simplified-auth-server"}
 
 
-@app.get("/validate")
+@app.api_route("/validate", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def validate_request(request: Request):
     """
     Validate a request by extracting configuration from headers and validating the bearer token.
@@ -1170,11 +1170,10 @@ async def validate_request(request: Request):
 
     try:
         # Extract headers
-        # Check for X-Authorization first (custom header used by this gateway)
-        # Only if X-Authorization is not present, check standard Authorization header
-        authorization = request.headers.get("X-Authorization")
+        # Check standard Authorization header first, fall back to X-Authorization for backward compatibility
+        authorization = request.headers.get("Authorization")
         if not authorization:
-            authorization = request.headers.get("Authorization")
+            authorization = request.headers.get("X-Authorization")
         cookie_header = request.headers.get("Cookie", "")
         user_pool_id = request.headers.get("X-User-Pool-Id")
         client_id = request.headers.get("X-Client-Id")
@@ -1478,6 +1477,14 @@ async def validate_request(request: Request):
                         region=region,
                     )
 
+            except ValueError as e:
+                # Token validation failed (expired, invalid, etc.) — return 401
+                logger.warning(f"Token validation failed: {e}")
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Token validation failed: {e}",
+                    headers={"WWW-Authenticate": "Bearer", "Connection": "close"},
+                )
             except Exception as e:
                 logger.error(f"Authentication provider error: {e}")
                 raise HTTPException(
@@ -1527,7 +1534,7 @@ async def validate_request(request: Request):
         # For providers that use groups (Keycloak, Entra ID, Cognito), map groups to scopes
         user_groups = validation_result.get("groups", [])
         auth_method = validation_result.get("method", "")
-        if user_groups and auth_method in ["keycloak", "entra", "cognito"]:
+        if user_groups and auth_method in ["keycloak", "entra", "cognito", "webex"]:
             # Map IdP groups to scopes using the group mappings (query DocumentDB)
             user_scopes = await map_groups_to_scopes(user_groups)
             logger.info(f"Mapped {auth_method} groups {user_groups} to scopes: {user_scopes}")
@@ -1732,6 +1739,14 @@ async def get_auth_config():
                 "auth_type": "keycloak",
                 "description": "Keycloak JWT token validation",
                 "required_headers": ["Authorization: Bearer <token>"],
+                "optional_headers": [],
+                "provider_info": provider_info,
+            }
+        elif provider_info.get("provider_type") == "webex":
+            return {
+                "auth_type": "webex",
+                "description": "Webex OAuth2 token validation (opaque token validated via /v1/people/me)",
+                "required_headers": ["Authorization: Bearer <webex-access-token>"],
                 "optional_headers": [],
                 "provider_info": provider_info,
             }
@@ -2333,6 +2348,149 @@ async def get_oauth2_providers():
         return {"providers": [], "error": str(e)}
 
 
+@app.post("/oauth2/token-exchange/{provider}")
+async def oauth2_token_exchange(provider: str, request: Request):
+    """Exchange authorization code for tokens (PKCE flow - frontend sends code, backend adds client_secret).
+
+    This endpoint is used by the client-side PKCE OAuth flow where the frontend
+    handles the authorization redirect and receives the code, but needs the backend
+    to exchange it because the client_secret must stay server-side.
+
+    Expected JSON body:
+        - code: Authorization code from OAuth provider
+        - redirect_uri: The redirect_uri used in the authorization request
+        - code_verifier: (optional) PKCE code verifier
+
+    Returns:
+        JSON with access_token, refresh_token, expires_in, token_type
+    """
+    try:
+        if provider not in OAUTH2_CONFIG.get("providers", {}):
+            raise HTTPException(status_code=404, detail=f"Provider {provider} not found")
+
+        provider_config = OAUTH2_CONFIG["providers"][provider]
+        if not provider_config.get("enabled", False):
+            raise HTTPException(status_code=400, detail=f"Provider {provider} is disabled")
+
+        body = await request.json()
+        code = body.get("code")
+        redirect_uri = body.get("redirect_uri")
+        code_verifier = body.get("code_verifier")
+
+        if not code:
+            raise HTTPException(status_code=400, detail="Missing authorization code")
+        if not redirect_uri:
+            raise HTTPException(status_code=400, detail="Missing redirect_uri")
+
+        # Exchange code for tokens — backend injects client_secret
+        token_data = {
+            "grant_type": "authorization_code",
+            "client_id": provider_config["client_id"],
+            "client_secret": provider_config["client_secret"],
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }
+
+        # Include code_verifier for PKCE flow
+        if code_verifier:
+            token_data["code_verifier"] = code_verifier
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                provider_config["token_url"],
+                data=token_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+            )
+
+        if response.status_code != 200:
+            logger.error(
+                f"Token exchange failed for {provider}: {response.status_code} - {response.text}"
+            )
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Token exchange failed: {response.text}",
+            )
+
+        token_response = response.json()
+        logger.info(f"PKCE token exchange successful for provider {provider}")
+
+        # Return tokens to the frontend (access_token becomes the gateway bearer token)
+        return {
+            "access_token": token_response.get("access_token"),
+            "refresh_token": token_response.get("refresh_token"),
+            "expires_in": token_response.get("expires_in"),
+            "token_type": token_response.get("token_type", "Bearer"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in token exchange for {provider}: {e}")
+        raise HTTPException(status_code=500, detail=f"Token exchange failed: {str(e)}")
+
+
+@app.post("/oauth2/refresh/{provider}")
+async def oauth2_refresh(provider: str, request: Request):
+    """Refresh an access token using a refresh token.
+
+    Expected JSON body:
+        - refresh_token: The refresh token
+
+    Returns:
+        JSON with new access_token, refresh_token, expires_in
+    """
+    try:
+        if provider not in OAUTH2_CONFIG.get("providers", {}):
+            raise HTTPException(status_code=404, detail=f"Provider {provider} not found")
+
+        provider_config = OAUTH2_CONFIG["providers"][provider]
+
+        body = await request.json()
+        refresh_token_value = body.get("refresh_token")
+
+        if not refresh_token_value:
+            raise HTTPException(status_code=400, detail="Missing refresh_token")
+
+        token_data = {
+            "grant_type": "refresh_token",
+            "client_id": provider_config["client_id"],
+            "client_secret": provider_config["client_secret"],
+            "refresh_token": refresh_token_value,
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                provider_config["token_url"],
+                data=token_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+            )
+
+        if response.status_code != 200:
+            logger.error(
+                f"Token refresh failed for {provider}: {response.status_code} - {response.text}"
+            )
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Token refresh failed: {response.text}",
+            )
+
+        token_response = response.json()
+        logger.info(f"Token refresh successful for provider {provider}")
+
+        return {
+            "access_token": token_response.get("access_token"),
+            "refresh_token": token_response.get("refresh_token"),
+            "expires_in": token_response.get("expires_in"),
+            "token_type": token_response.get("token_type", "Bearer"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in token refresh for {provider}: {e}")
+        raise HTTPException(status_code=500, detail=f"Token refresh failed: {str(e)}")
+
+
 @app.get("/oauth2/login/{provider}")
 async def oauth2_login(provider: str, request: Request, redirect_uri: str = None):
     """Initiate OAuth2 login flow"""
@@ -2365,8 +2523,11 @@ async def oauth2_login(provider: str, request: Request, redirect_uri: str = None
             f"OAuth2 login - host: {host}, x-cloudfront-forwarded-proto: {cloudfront_proto}, x-forwarded-proto: {forwarded_proto}, scheme: {scheme}"
         )
 
-        # Special case for localhost to include port
-        if "localhost" in host and ":" not in host:
+        # Use AUTH_SERVER_EXTERNAL_URL if set, otherwise fall back to host header
+        auth_server_external_url = os.environ.get("AUTH_SERVER_EXTERNAL_URL")
+        if auth_server_external_url:
+            auth_server_url = auth_server_external_url.rstrip("/") + ROOT_PATH
+        elif "localhost" in host and ":" not in host:
             auth_server_url = f"{scheme}://localhost:8888{ROOT_PATH}"
         else:
             auth_server_url = f"{scheme}://{host}{ROOT_PATH}"
@@ -2559,6 +2720,25 @@ async def oauth2_callback(
                 logger.info(f"Raw user info from {provider}: {user_info}")
                 mapped_user = map_user_info(user_info, provider_config)
                 logger.info(f"Mapped user info from userInfo: {mapped_user}")
+        elif provider == "webex":
+            # For Webex, use the provider's get_user_info which calls /v1/people/me
+            # and resolves orgId -> groups
+            try:
+                auth_provider = get_auth_provider("webex")
+                webex_user_info = auth_provider.get_user_info(token_data["access_token"])
+                mapped_user = {
+                    "username": webex_user_info.get("username") or webex_user_info.get("email"),
+                    "email": webex_user_info.get("email"),
+                    "name": webex_user_info.get("name"),
+                    "groups": webex_user_info.get("groups", []),
+                }
+                logger.info(f"User extracted from Webex /v1/people/me: {mapped_user}")
+            except Exception as e:
+                logger.error(f"Webex user info retrieval failed: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to retrieve Webex user info: {e}",
+                )
         elif provider == "entra":
             # For Entra ID, prioritize ID token claims over userinfo endpoint
             try:

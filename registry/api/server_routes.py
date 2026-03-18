@@ -401,6 +401,8 @@ async def get_servers_json(
                     "auth_scheme": server_info.get("auth_scheme", "none"),
                     "auth_header_name": server_info.get("auth_header_name"),
                     "tool_list": server_info.get("tool_list"),
+                    "enabled_tools_count": len([t for t in (server_info.get("tool_list") or []) if t.get("enabled", True)]),
+                    "egress_auth_header": server_info.get("egress_auth_header"),
                 }
             )
 
@@ -532,6 +534,8 @@ async def register_service(
     auth_scheme: Annotated[str, Form()] = "none",
     auth_credential: Annotated[str | None, Form()] = None,
     auth_header_name: Annotated[str | None, Form()] = None,
+    egress_auth_header: Annotated[str | None, Form()] = None,
+    tool_list: Annotated[str | None, Form()] = None,
     user_context: Annotated[dict, Depends(enhanced_auth)] = None,
 ):
     """Register a new service (requires register_service UI permission)."""
@@ -592,6 +596,7 @@ async def register_service(
         "num_tools": num_tools,
         "license": license_str,
         "tool_list": [],
+        "egress_auth_header": egress_auth_header or "",
         "visibility": visibility,
         "allowed_groups": allowed_groups_list,
     }
@@ -605,14 +610,23 @@ async def register_service(
     # Add metadata if provided (expects JSON string)
     if metadata:
         try:
-            import json
-
             server_entry["metadata"] = json.loads(metadata)
         except json.JSONDecodeError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid JSON in metadata field",
             )
+
+    # Process tool_list if provided (JSON string from frontend)
+    logger.info(f"[REGISTER] tool_list param type={type(tool_list).__name__}, value_preview={repr(tool_list[:200]) if tool_list else 'None'}")
+    if tool_list:
+        try:
+            parsed_tools = json.loads(tool_list)
+            server_entry["tool_list"] = parsed_tools
+            server_entry["num_tools"] = len(parsed_tools)
+            logger.info(f"[REGISTER] Parsed {len(parsed_tools)} tools from tool_list")
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.error(f"[REGISTER] Failed to parse tool_list: {e}")
 
     # Add auth fields
     if auth_scheme and auth_scheme in VALID_AUTH_SCHEMES:
@@ -1297,7 +1311,8 @@ async def edit_server_submit(
     auth_credential: Annotated[str | None, Form()] = None,
     auth_header_name: Annotated[str | None, Form()] = None,
     egress_auth_header: Annotated[str | None, Form()] = None,
-    _csrf: Annotated[None, Depends(verify_csrf_token)] = None,
+    tool_list: Annotated[str | None, Form()] = None,
+    _csrf: Annotated[None, Depends(verify_csrf_token_flexible)] = None,
 ):
     """Handle server edit form submission (requires modify_service UI permission)."""
     from ..auth.dependencies import user_has_ui_permission_for_service
@@ -1369,9 +1384,7 @@ async def edit_server_submit(
         "path": service_path,
         "proxy_pass_url": proxy_pass_url,
         "tags": tag_list,
-        "num_tools": num_tools,
         "license": license_str,
-        "tool_list": [],  # Keep existing or initialize
         "visibility": visibility,
         "allowed_groups": allowed_groups_list,
     }
@@ -1383,8 +1396,6 @@ async def edit_server_submit(
     # Parse and add metadata if provided
     if metadata:
         try:
-            import json
-
             updated_server_entry["metadata"] = json.loads(metadata)
         except json.JSONDecodeError:
             raise HTTPException(
@@ -1399,6 +1410,14 @@ async def edit_server_submit(
         updated_server_entry["auth_header_name"] = auth_header_name
     if egress_auth_header is not None:
         updated_server_entry["egress_auth_header"] = egress_auth_header if egress_auth_header else None
+    if tool_list is not None:
+        try:
+            parsed_tool_list = json.loads(tool_list) if tool_list else []
+            if isinstance(parsed_tool_list, list):
+                updated_server_entry["tool_list"] = parsed_tool_list
+                updated_server_entry["num_tools"] = len(parsed_tool_list)
+        except (json.JSONDecodeError, TypeError):
+            pass
     if auth_credential and auth_scheme != "none":
         updated_server_entry["auth_credential"] = auth_credential
         try:
@@ -1439,6 +1458,312 @@ async def edit_server_submit(
 
     # Redirect back to the main page
     return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+class TestEgressAuthRequest(BaseModel):
+    token: str
+
+
+@router.post("/test-mcp-server/{service_path:path}")
+async def test_mcp_server(
+    service_path: str,
+    body: TestEgressAuthRequest,
+    user_context: Annotated[dict, Depends(enhanced_auth)],
+):
+    """Test connectivity to an MCP server and fetch its tool list.
+
+    Sends an MCP initialize request to the server's proxy_pass_url with
+    the provided token as Authorization: Bearer <token>, then fetches
+    the tools/list to return available tools.
+    """
+    if not service_path.startswith("/"):
+        service_path = "/" + service_path
+
+    server_info = await server_service.get_server_info(service_path)
+    if not server_info:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    proxy_pass_url = server_info.get("proxy_pass_url")
+    if not proxy_pass_url:
+        raise HTTPException(status_code=400, detail="Server has no proxy_pass_url configured")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if body.token:
+        headers["Authorization"] = f"Bearer {body.token}"
+
+    # Step 1: MCP initialize
+    mcp_init_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "mcp-gateway-test", "version": "1.0.0"},
+        },
+    }
+
+    def _parse_mcp_response(resp: httpx.Response) -> dict | None:
+        """Parse an MCP response, handling both plain JSON and SSE formats."""
+        content_type = resp.headers.get("content-type", "")
+
+        # Plain JSON response
+        if "application/json" in content_type:
+            try:
+                return resp.json()
+            except Exception:
+                return None
+
+        # SSE response — extract JSON from data: lines
+        if "text/event-stream" in content_type or "data:" in resp.text[:100]:
+            for line in resp.text.splitlines():
+                line = line.strip()
+                if line.startswith("data:"):
+                    data_str = line[len("data:"):].strip()
+                    if data_str:
+                        try:
+                            return json.loads(data_str)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+            return None
+
+        # Fallback: try JSON anyway
+        try:
+            return resp.json()
+        except Exception:
+            return None
+
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+            resp = await client.post(proxy_pass_url, json=mcp_init_payload, headers=headers)
+
+            if resp.status_code >= 400:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "success": False,
+                        "status_code": resp.status_code,
+                        "message": f"Server returned HTTP {resp.status_code}: {resp.text[:200]}",
+                    },
+                )
+
+            # Parse initialize response (handles JSON and SSE)
+            resp_data = _parse_mcp_response(resp)
+            if not resp_data:
+                return JSONResponse({
+                    "success": True,
+                    "status_code": resp.status_code,
+                    "message": f"Server responded with HTTP {resp.status_code} but could not parse MCP response",
+                    "tools": [],
+                })
+
+            server_name = resp_data.get("result", {}).get("serverInfo", {}).get("name", "unknown")
+            server_version = resp_data.get("result", {}).get("serverInfo", {}).get("version", "unknown")
+
+            # Capture session ID if returned (for stateful servers)
+            session_id = resp.headers.get("mcp-session-id")
+            if session_id:
+                headers["Mcp-Session-Id"] = session_id
+
+            # Step 2: Send initialized notification
+            initialized_payload = {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+            }
+            await client.post(proxy_pass_url, json=initialized_payload, headers=headers)
+
+            # Step 3: Fetch tools/list
+            tools_payload = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {},
+            }
+            tools_resp = await client.post(proxy_pass_url, json=tools_payload, headers=headers)
+
+            tools = []
+            if tools_resp.status_code < 400:
+                tools_data = _parse_mcp_response(tools_resp)
+                if tools_data:
+                    tools = tools_data.get("result", {}).get("tools", [])
+
+            # Build tool list for response, preserving existing enabled state from DB
+            tool_list_response = []
+            if tools:
+                existing_server = await server_service.get_server_info(service_path)
+                existing_tools = {
+                    t.get("name"): t.get("enabled", True)
+                    for t in (existing_server or {}).get("tool_list", [])
+                }
+                tool_list_response = [
+                    {
+                        "name": t.get("name", ""),
+                        "description": t.get("description", ""),
+                        "enabled": existing_tools.get(t.get("name", ""), True),
+                    }
+                    for t in tools
+                ]
+
+            return JSONResponse({
+                "success": True,
+                "status_code": resp.status_code,
+                "message": f"Connected to {server_name} v{server_version} ({len(tools)} tools)",
+                "server_info": resp_data.get("result", {}).get("serverInfo"),
+                "tools": tool_list_response,
+            })
+
+    except httpx.TimeoutException:
+        return JSONResponse(
+            status_code=200,
+            content={"success": False, "message": "Connection timed out after 15s", "tools": []},
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=200,
+            content={"success": False, "message": f"Connection failed: {str(e)}", "tools": []},
+        )
+
+
+class TestMcpConnectionRequest(BaseModel):
+    proxy_pass_url: str
+    token: str = ""
+
+
+@router.post("/test-mcp-connection")
+async def test_mcp_connection(
+    body: TestMcpConnectionRequest,
+    user_context: Annotated[dict, Depends(enhanced_auth)],
+):
+    """Test connectivity to an MCP server by URL (for pre-registration testing).
+
+    Unlike test-mcp-server which requires a registered server path, this endpoint
+    accepts a proxy_pass_url directly so it can be used before registration.
+    """
+    proxy_pass_url = body.proxy_pass_url
+    if not proxy_pass_url:
+        raise HTTPException(status_code=400, detail="proxy_pass_url is required")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if body.token:
+        headers["Authorization"] = f"Bearer {body.token}"
+
+    mcp_init_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "mcp-gateway-test", "version": "1.0.0"},
+        },
+    }
+
+    def _parse_resp(resp: httpx.Response) -> dict | None:
+        content_type = resp.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                return resp.json()
+            except Exception:
+                return None
+        if "text/event-stream" in content_type or "data:" in resp.text[:100]:
+            for line in resp.text.splitlines():
+                line = line.strip()
+                if line.startswith("data:"):
+                    data_str = line[len("data:"):].strip()
+                    if data_str:
+                        try:
+                            return json.loads(data_str)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+            return None
+        try:
+            return resp.json()
+        except Exception:
+            return None
+
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=15.0) as client:
+            resp = await client.post(proxy_pass_url, json=mcp_init_payload, headers=headers)
+
+            if resp.status_code >= 400:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "success": False,
+                        "status_code": resp.status_code,
+                        "message": f"Server returned HTTP {resp.status_code}: {resp.text[:200]}",
+                    },
+                )
+
+            resp_data = _parse_resp(resp)
+            if not resp_data:
+                return JSONResponse({
+                    "success": True,
+                    "status_code": resp.status_code,
+                    "message": f"Server responded with HTTP {resp.status_code} but could not parse MCP response",
+                    "tools": [],
+                })
+
+            server_name = resp_data.get("result", {}).get("serverInfo", {}).get("name", "unknown")
+            server_version = resp_data.get("result", {}).get("serverInfo", {}).get("version", "unknown")
+
+            session_id = resp.headers.get("mcp-session-id")
+            if session_id:
+                headers["Mcp-Session-Id"] = session_id
+
+            initialized_payload = {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+            }
+            await client.post(proxy_pass_url, json=initialized_payload, headers=headers)
+
+            tools_payload = {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {},
+            }
+            tools_resp = await client.post(proxy_pass_url, json=tools_payload, headers=headers)
+
+            tools = []
+            if tools_resp.status_code < 400:
+                tools_data = _parse_resp(tools_resp)
+                if tools_data:
+                    tools = tools_data.get("result", {}).get("tools", [])
+
+            tool_list = [
+                {
+                    "name": t.get("name", ""),
+                    "description": t.get("description", ""),
+                    "enabled": True,
+                }
+                for t in tools
+            ]
+
+            return JSONResponse({
+                "success": True,
+                "status_code": resp.status_code,
+                "message": f"Connected to {server_name} v{server_version} ({len(tools)} tools)",
+                "server_info": resp_data.get("result", {}).get("serverInfo"),
+                "tools": tool_list,
+            })
+
+    except httpx.TimeoutException:
+        return JSONResponse(
+            status_code=200,
+            content={"success": False, "message": "Connection timed out after 15s", "tools": []},
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=200,
+            content={"success": False, "message": f"Connection failed: {str(e)}", "tools": []},
+        )
 
 
 @router.get("/tokens", response_class=HTMLResponse)

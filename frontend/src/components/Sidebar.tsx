@@ -14,6 +14,7 @@ import {
   ArrowDownTrayIcon,
 } from '@heroicons/react/24/outline';
 import { useAuth } from '../contexts/AuthContext';
+import { getAccessToken } from '../services/webexAuth';
 import axios from 'axios';
 
 interface SidebarProps {
@@ -74,6 +75,24 @@ const fetchAdminTokens = async () => {
   setLoading(true);
   setError('');
   try {
+    // For Webex auth, the gateway token IS the Webex access token
+    if (user?.provider === 'webex') {
+      const webexToken = getAccessToken();
+      if (webexToken) {
+        setTokenData({
+          success: true,
+          token_type: 'Webex Bearer',
+          access_token: webexToken,
+          note: 'This is your Webex access token. Use it as the Authorization Bearer token for MCP gateway requests.',
+        });
+        setShowTokenModal(true);
+        return;
+      } else {
+        setError('No Webex token found. Please log in again.');
+        return;
+      }
+    }
+
     const requestData = {
       description: 'Generated via sidebar',
       expires_in_hours: 8,
